@@ -1,0 +1,212 @@
+name: WP Plugin CI
+
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: 'JSON array of PHP versions for syntax matrix'
+        type: string
+        default: '["7.4", "8.0", "8.1", "8.2", "8.3"]'
+      phpcs-standard:
+        description: 'PHPCS standard slug (WordPress, WordPress-Core, WordPress-Extra, etc.)'
+        type: string
+        default: 'WordPress'
+      phpcs-paths:
+        description: 'Space-separated paths to scan'
+        type: string
+        default: '.'
+      phpcs-exclude:
+        description: 'Comma-separated path exclusions for PHPCS'
+        type: string
+        default: '*/vendor/*,*/node_modules/*,*/dist/*,*/build/*'
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: PHP ${{ matrix.php }} syntax
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+
+      - name: Lint PHP files
+        run: |
+          set -o pipefail
+          ERRORS=0
+          while IFS= read -r -d '' file; do
+            if ! php -l "$file" > /dev/null 2>&1; then
+              echo "::error file=$file::Parse error on PHP ${{ matrix.php }}"
+              php -l "$file" 2>&1 | tail -n +2 | head -1
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(find . \
+            -type d \( -name vendor -o -name node_modules -o -name dist -o -name build -o -name .git \) -prune -o \
+            -type f -name '*.php' -print0)
+          echo "::notice::Found $ERRORS parse error(s) on PHP ${{ matrix.php }}"
+          if [ "$ERRORS" -gt 0 ]; then exit 1; fi
+
+  phpcs:
+    name: PHPCS (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: cs2pr, composer:v2
+
+      - name: Cache PHPCS standards
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: phpcs-standards-v1-${{ runner.os }}
+
+      - name: Install PHPCS + WP/WC/Compat standards
+        run: |
+          composer global config --no-plugins allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer global require --no-interaction --no-progress \
+            "squizlabs/php_codesniffer:^3.10" \
+            "wp-coding-standards/wpcs:^3.1" \
+            "phpcompatibility/phpcompatibility-wp:^2.1" \
+            "dealerdirect/phpcodesniffer-composer-installer:^1.0"
+          echo "$HOME/.composer/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: Show registered standards
+        run: phpcs -i
+
+      - name: Run PHPCS (checkstyle for PR annotations)
+        id: phpcs
+        continue-on-error: true
+        run: |
+          phpcs \
+            --standard='${{ inputs.phpcs-standard }}' \
+            --ignore='${{ inputs.phpcs-exclude }}' \
+            --extensions=php \
+            --runtime-set ignore_warnings_on_exit 1 \
+            --report-full \
+            --report-checkstyle=./phpcs-checkstyle.xml \
+            ${{ inputs.phpcs-paths }} || true
+
+      - name: Annotate PR with PHPCS findings
+        if: always()
+        run: cs2pr --graceful-warnings ./phpcs-checkstyle.xml || true
+
+      - name: Upload PHPCS report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpcs-checkstyle
+          path: ./phpcs-checkstyle.xml
+          if-no-files-found: ignore
+
+  php-compatibility:
+    name: PHP Compatibility (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: cs2pr, composer:v2
+
+      - name: Cache PHPCS standards
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: phpcs-standards-v1-${{ runner.os }}
+
+      - name: Install PHPCS + PHPCompatibilityWP
+        run: |
+          composer global config --no-plugins allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer global require --no-interaction --no-progress \
+            "squizlabs/php_codesniffer:^3.10" \
+            "phpcompatibility/phpcompatibility-wp:^2.1" \
+            "dealerdirect/phpcodesniffer-composer-installer:^1.0"
+          echo "$HOME/.composer/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: Detect minimum PHP from plugin header
+        id: minphp
+        run: |
+          MIN_PHP=$(grep -rihE '^[[:space:]]*\*?[[:space:]]*Requires PHP:' --include='*.php' --include='readme.txt' . 2>/dev/null \
+            | head -1 \
+            | sed -E 's/.*Requires PHP:[[:space:]]*([0-9]+\.[0-9]+).*/\1/')
+          if [ -z "$MIN_PHP" ]; then MIN_PHP="7.4"; echo "No 'Requires PHP' header found; defaulting to 7.4"; fi
+          echo "min_php=$MIN_PHP" >> "$GITHUB_OUTPUT"
+          echo "Testing PHP compatibility from $MIN_PHP onward"
+
+      - name: Run PHPCompatibilityWP
+        continue-on-error: true
+        run: |
+          phpcs \
+            --standard=PHPCompatibilityWP \
+            --runtime-set testVersion '${{ steps.minphp.outputs.min_php }}-' \
+            --ignore='${{ inputs.phpcs-exclude }}' \
+            --extensions=php \
+            --report-full \
+            --report-checkstyle=./phpcompat-checkstyle.xml \
+            ${{ inputs.phpcs-paths }} || true
+
+      - name: Annotate PR with PHP compat findings
+        if: always()
+        run: cs2pr --graceful-warnings ./phpcompat-checkstyle.xml || true
+
+      - name: Upload PHP compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpcompat-checkstyle
+          path: ./phpcompat-checkstyle.xml
+          if-no-files-found: ignore
+
+  composer-validate:
+    name: composer.json validity
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for composer.json
+        id: check
+        run: |
+          if [ -f composer.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No composer.json at repo root; skipping."
+          fi
+
+      - name: Setup PHP
+        if: steps.check.outputs.exists == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+
+      - name: Validate composer.json
+        if: steps.check.outputs.exists == 'true'
+        run: composer validate --no-check-publish --no-check-all
