@@ -112,6 +112,7 @@ jobs:
 
       - name: Summarize PHPCS findings
         if: always()
+        continue-on-error: true
         run: |
           REPORT=./phpcs-checkstyle.xml
           {
@@ -121,9 +122,9 @@ jobs:
               echo "No checkstyle report generated."
               exit 0
             fi
-            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null || echo 0)
-            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null || echo 0)
-            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null || echo 0)
+            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null) || FILES=0
+            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null) || ERRORS=0
+            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null) || WARNINGS=0
             REAL_ERRORS=$((ERRORS - WARNINGS))
             echo "| Metric | Count |"
             echo "| --- | ---: |"
@@ -131,17 +132,19 @@ jobs:
             echo "| Errors | $REAL_ERRORS |"
             echo "| Warnings | $WARNINGS |"
             echo ""
-            echo "### Top 10 sniffs"
-            echo ""
-            echo "| Count | Sniff |"
-            echo "| ---: | --- |"
-            grep -oE 'source="[^"]+"' "$REPORT" \
-              | sort | uniq -c | sort -rn | head -10 \
-              | while read -r count src; do
-                  sniff=$(echo "$src" | sed -E 's/source="([^"]+)"/\1/')
-                  echo "| $count | \`$sniff\` |"
-                done
-            echo ""
+            if [ "$FILES" != "0" ]; then
+              echo "### Top 10 sniffs"
+              echo ""
+              echo "| Count | Sniff |"
+              echo "| ---: | --- |"
+              grep -oE 'source="[^"]+"' "$REPORT" \
+                | sort | uniq -c | sort -rn | head -10 \
+                | while read -r count src; do
+                    sniff=$(echo "$src" | sed -E 's/source="([^"]+)"/\1/')
+                    echo "| $count | \`$sniff\` |"
+                  done
+              echo ""
+            fi
             echo "_All findings are informational and do not gate merges. Download the \`phpcs-checkstyle\` artifact for the full report._"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -212,6 +215,7 @@ jobs:
 
       - name: Summarize PHP compatibility findings
         if: always()
+        continue-on-error: true
         run: |
           REPORT=./phpcompat-checkstyle.xml
           {
@@ -221,9 +225,9 @@ jobs:
               echo "No checkstyle report generated."
               exit 0
             fi
-            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null || echo 0)
-            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null || echo 0)
-            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null || echo 0)
+            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null) || FILES=0
+            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null) || ERRORS=0
+            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null) || WARNINGS=0
             REAL_ERRORS=$((ERRORS - WARNINGS))
             if [ "$FILES" = "0" ]; then
               echo "Clean. No PHP version-compatibility issues detected from \`${{ steps.minphp.outputs.min_php }}\` onward."
