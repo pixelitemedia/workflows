@@ -8,9 +8,9 @@ on:
         type: string
         default: '["7.4", "8.0", "8.1", "8.2", "8.3"]'
       phpcs-standard:
-        description: 'PHPCS standard slug (WordPress, WordPress-Core, WordPress-Extra, etc.)'
+        description: 'PHPCS standard slug (WordPress-Core, WordPress, WordPress-Extra, etc.)'
         type: string
-        default: 'WordPress'
+        default: 'WordPress-Core'
       phpcs-paths:
         description: 'Space-separated paths to scan'
         type: string
@@ -104,11 +104,46 @@ jobs:
             --runtime-set ignore_warnings_on_exit 1 \
             --report-full \
             --report-checkstyle=./phpcs-checkstyle.xml \
-            ${{ inputs.phpcs-paths }} || true
+            ${{ inputs.phpcs-paths }}
 
       - name: Annotate PR with PHPCS findings
         if: always()
         run: cs2pr --graceful-warnings ./phpcs-checkstyle.xml || true
+
+      - name: Summarize PHPCS findings
+        if: always()
+        run: |
+          REPORT=./phpcs-checkstyle.xml
+          {
+            echo "## PHPCS findings — \`${{ inputs.phpcs-standard }}\`"
+            echo ""
+            if [ ! -s "$REPORT" ]; then
+              echo "No checkstyle report generated."
+              exit 0
+            fi
+            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null || echo 0)
+            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null || echo 0)
+            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null || echo 0)
+            REAL_ERRORS=$((ERRORS - WARNINGS))
+            echo "| Metric | Count |"
+            echo "| --- | ---: |"
+            echo "| Files with findings | $FILES |"
+            echo "| Errors | $REAL_ERRORS |"
+            echo "| Warnings | $WARNINGS |"
+            echo ""
+            echo "### Top 10 sniffs"
+            echo ""
+            echo "| Count | Sniff |"
+            echo "| ---: | --- |"
+            grep -oE 'source="[^"]+"' "$REPORT" \
+              | sort | uniq -c | sort -rn | head -10 \
+              | while read -r count src; do
+                  sniff=$(echo "$src" | sed -E 's/source="([^"]+)"/\1/')
+                  echo "| $count | \`$sniff\` |"
+                done
+            echo ""
+            echo "_All findings are informational and do not gate merges. Download the \`phpcs-checkstyle\` artifact for the full report._"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PHPCS report as artifact
         if: always()
@@ -159,6 +194,7 @@ jobs:
           echo "Testing PHP compatibility from $MIN_PHP onward"
 
       - name: Run PHPCompatibilityWP
+        id: phpcompat
         continue-on-error: true
         run: |
           phpcs \
@@ -168,11 +204,48 @@ jobs:
             --extensions=php \
             --report-full \
             --report-checkstyle=./phpcompat-checkstyle.xml \
-            ${{ inputs.phpcs-paths }} || true
+            ${{ inputs.phpcs-paths }}
 
       - name: Annotate PR with PHP compat findings
         if: always()
         run: cs2pr --graceful-warnings ./phpcompat-checkstyle.xml || true
+
+      - name: Summarize PHP compatibility findings
+        if: always()
+        run: |
+          REPORT=./phpcompat-checkstyle.xml
+          {
+            echo "## PHP Compatibility — testing \`${{ steps.minphp.outputs.min_php }}+\`"
+            echo ""
+            if [ ! -s "$REPORT" ]; then
+              echo "No checkstyle report generated."
+              exit 0
+            fi
+            FILES=$(grep -c '<file ' "$REPORT" 2>/dev/null || echo 0)
+            ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null || echo 0)
+            WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null || echo 0)
+            REAL_ERRORS=$((ERRORS - WARNINGS))
+            if [ "$FILES" = "0" ]; then
+              echo "Clean. No PHP version-compatibility issues detected from \`${{ steps.minphp.outputs.min_php }}\` onward."
+              exit 0
+            fi
+            echo "| Metric | Count |"
+            echo "| --- | ---: |"
+            echo "| Files with findings | $FILES |"
+            echo "| Errors | $REAL_ERRORS |"
+            echo "| Warnings | $WARNINGS |"
+            echo ""
+            echo "### Top sniffs"
+            echo ""
+            echo "| Count | Sniff |"
+            echo "| ---: | --- |"
+            grep -oE 'source="[^"]+"' "$REPORT" \
+              | sort | uniq -c | sort -rn | head -10 \
+              | while read -r count src; do
+                  sniff=$(echo "$src" | sed -E 's/source="([^"]+)"/\1/')
+                  echo "| $count | \`$sniff\` |"
+                done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PHP compatibility report
         if: always()
