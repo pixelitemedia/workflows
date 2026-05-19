@@ -93,7 +93,7 @@ jobs:
       - name: Show registered standards
         run: phpcs -i
 
-      - name: Run PHPCS (checkstyle for PR annotations)
+      - name: Run PHPCS (checkstyle + summary)
         id: phpcs
         continue-on-error: true
         run: |
@@ -104,6 +104,7 @@ jobs:
             --runtime-set ignore_warnings_on_exit 1 \
             --report-full \
             --report-checkstyle=./phpcs-checkstyle.xml \
+            --report-summary=./phpcs-summary.txt \
             ${{ inputs.phpcs-paths }}
 
       - name: Annotate PR with PHPCS findings
@@ -126,11 +127,21 @@ jobs:
             ERRORS=$(grep -c '<error ' "$REPORT" 2>/dev/null) || ERRORS=0
             WARNINGS=$(grep -c 'severity="warning"' "$REPORT" 2>/dev/null) || WARNINGS=0
             REAL_ERRORS=$((ERRORS - WARNINGS))
+            FIXABLE=0
+            if [ -s ./phpcs-summary.txt ]; then
+              FIXABLE=$(grep -oE 'PHPCBF CAN FIX [0-9]+' ./phpcs-summary.txt 2>/dev/null | grep -oE '[0-9]+' | head -1)
+              FIXABLE=${FIXABLE:-0}
+            fi
+            PCT_FIXABLE=0
+            if [ "$REAL_ERRORS" -gt 0 ]; then
+              PCT_FIXABLE=$(( FIXABLE * 100 / REAL_ERRORS ))
+            fi
             echo "| Metric | Count |"
             echo "| --- | ---: |"
             echo "| Files with findings | $FILES |"
             echo "| Errors | $REAL_ERRORS |"
             echo "| Warnings | $WARNINGS |"
+            echo "| Auto-fixable (\`phpcbf\`) | $FIXABLE (${PCT_FIXABLE}% of errors) |"
             echo ""
             if [ "$FILES" != "0" ]; then
               echo "### Top 10 sniffs"
@@ -143,6 +154,10 @@ jobs:
                     sniff=$(echo "$src" | sed -E 's/source="([^"]+)"/\1/')
                     echo "| $count | \`$sniff\` |"
                   done
+              echo ""
+            fi
+            if [ "$FIXABLE" -gt 0 ]; then
+              echo "Run \`phpcbf --standard=${{ inputs.phpcs-standard }} .\` locally to auto-fix the $FIXABLE mechanical issues."
               echo ""
             fi
             echo "_All findings are informational and do not gate merges. Download the \`phpcs-checkstyle\` artifact for the full report._"
