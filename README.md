@@ -156,20 +156,21 @@ jobs:
   release:
     uses: pixelitemedia/workflows/.github/workflows/wp-org-release.yml@v1
     secrets:
-      SVN_USERNAME: ${{ secrets.WP_ORG_USERNAME }}
+      SVN_USERNAME: ${{ secrets.WP_ORG_USER }}
       SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
 ```
 
-#### Required secrets (per repo or org-wide)
+#### Required secrets (per repo)
 
 | Secret | Value |
 |---|---|
-| `WP_ORG_USERNAME` | wp.org username with commit access to the plugin's SVN |
+| `WP_ORG_USER` | wp.org username with commit access to the plugin's SVN |
 | `WP_ORG_PASSWORD` | wp.org password (or app password if 2FA enabled) |
 
-Set them as **organization secrets** so the same credentials apply to
-all four free plugins in one place:
-`https://github.com/organizations/pixelitemedia/settings/secrets/actions`
+Set these as **repository secrets** on each of the four free-plugin repos at
+`https://github.com/pixelitemedia/<repo>/settings/secrets/actions`. Free
+GitHub plans don't support org-level secrets on private repos, so each
+repo holds its own copy.
 
 #### How tags map to wp.org versions
 
@@ -191,7 +192,7 @@ jobs:
       assets-dir: 'wp-org-assets'      # defaults to .wordpress-org
       build-dir: './build'             # path of built plugin if not repo root
     secrets:
-      SVN_USERNAME: ${{ secrets.WP_ORG_USERNAME }}
+      SVN_USERNAME: ${{ secrets.WP_ORG_USER }}
       SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
 ```
 
