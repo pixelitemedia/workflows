@@ -132,16 +132,17 @@ jobs:
               FIXABLE=$(grep -oE 'CAN FIX (THE )?[0-9]+' ./phpcs-summary.txt 2>/dev/null | grep -oE '[0-9]+' | tail -1)
               FIXABLE=${FIXABLE:-0}
             fi
+            TOTAL_FINDINGS=$(( REAL_ERRORS + WARNINGS ))
             PCT_FIXABLE=0
-            if [ "$REAL_ERRORS" -gt 0 ]; then
-              PCT_FIXABLE=$(( FIXABLE * 100 / REAL_ERRORS ))
+            if [ "$TOTAL_FINDINGS" -gt 0 ]; then
+              PCT_FIXABLE=$(( FIXABLE * 100 / TOTAL_FINDINGS ))
             fi
             echo "| Metric | Count |"
             echo "| --- | ---: |"
             echo "| Files with findings | $FILES |"
             echo "| Errors | $REAL_ERRORS |"
             echo "| Warnings | $WARNINGS |"
-            echo "| Auto-fixable (\`phpcbf\`) | $FIXABLE (${PCT_FIXABLE}% of errors) |"
+            echo "| Auto-fixable (\`phpcbf\`) | $FIXABLE (${PCT_FIXABLE}% of findings) |"
             echo ""
             if [ "$FILES" != "0" ]; then
               echo "### Top 10 sniffs"
