@@ -1,0 +1,70 @@
+name: WP.org Plugin Release
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: 'wp.org plugin slug. Defaults to repo name.'
+        type: string
+        required: false
+        default: ''
+      assets-dir:
+        description: 'Path to wp.org assets folder (banners, screenshots, icon).'
+        type: string
+        default: '.wordpress-org'
+      build-dir:
+        description: 'Path of the built plugin to deploy. Defaults to repo root.'
+        type: string
+        default: './'
+    secrets:
+      SVN_USERNAME:
+        description: 'wp.org SVN username'
+        required: true
+      SVN_PASSWORD:
+        description: 'wp.org SVN password'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Deploy to WordPress.org
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy via 10up action
+        id: deploy
+        uses: 10up/action-wordpress-plugin-deploy@stable
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: ${{ inputs.slug }}
+          ASSETS_DIR: ${{ inputs.assets-dir }}
+          BUILD_DIR: ${{ inputs.build-dir }}
+
+      - name: Summarize deploy
+        if: always()
+        run: |
+          SLUG_USED="${{ inputs.slug }}"
+          if [ -z "$SLUG_USED" ]; then
+            SLUG_USED="${GITHUB_REPOSITORY##*/}"
+          fi
+          TAG="${GITHUB_REF##refs/tags/}"
+          {
+            echo "## wp.org deploy"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Slug | \`$SLUG_USED\` |"
+            echo "| Git tag | \`$TAG\` |"
+            echo "| Deploy status | ${{ job.status }} |"
+            echo ""
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "Plugin pushed to [wordpress.org/plugins/$SLUG_USED](https://wordpress.org/plugins/$SLUG_USED/)"
+            else
+              echo "Deploy did not complete. Check the deploy step output for the cause — most often: missing/mismatched 'Stable tag' in readme.txt, or a Subversion auth error."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

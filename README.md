@@ -6,6 +6,12 @@ to maintain, ~20 plugins inherit it.
 
 ## Available workflows
 
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `wp-plugin-ci.yml` | push, PR | Syntax + sniffs + composer validity, informational only |
+| `deploy.yml` | caller-controlled | rsync plugin to a known target server (sandbox, trywpem) |
+| `wp-org-release.yml` | tag push (caller-controlled) | Deploy a free plugin to wordpress.org SVN |
+
 ### `wp-plugin-ci.yml` — Standard WordPress plugin CI
 
 Four jobs, all **informational only** (`continue-on-error: true`) — they
@@ -128,6 +134,66 @@ jobs:
 
 Default excludes cover `.git*`, `.github`, `node_modules`, `tests`, `phpunit.xml*`,
 `.phpcs.xml*`, `.DS_Store`. Rsync runs with `--delete` so stale files get cleaned up.
+
+### `wp-org-release.yml` — Deploy a free plugin to wordpress.org
+
+Wraps [10up/action-wordpress-plugin-deploy](https://github.com/10up/action-wordpress-plugin-deploy)
+behind a thin reusable workflow with a job-summary block on the run page.
+
+#### Use it
+
+Add `.github/workflows/wp-org-release.yml` to your plugin repo:
+
+```yaml
+name: Release to wp.org
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    uses: pixelitemedia/workflows/.github/workflows/wp-org-release.yml@v1
+    secrets:
+      SVN_USERNAME: ${{ secrets.WP_ORG_USERNAME }}
+      SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
+```
+
+#### Required secrets (per repo or org-wide)
+
+| Secret | Value |
+|---|---|
+| `WP_ORG_USERNAME` | wp.org username with commit access to the plugin's SVN |
+| `WP_ORG_PASSWORD` | wp.org password (or app password if 2FA enabled) |
+
+Set them as **organization secrets** so the same credentials apply to
+all four free plugins in one place:
+`https://github.com/organizations/pixelitemedia/settings/secrets/actions`
+
+#### How tags map to wp.org versions
+
+| You push | wp.org receives |
+|---|---|
+| `git tag v7.2.3.1 && git push origin v7.2.3.1` | wp.org tag `7.2.3.1` (the `v` prefix is stripped by the action) |
+
+The `readme.txt`'s `Stable tag:` header **must match** the git tag. If
+the values diverge, the deploy fails.
+
+#### Optional inputs
+
+```yaml
+jobs:
+  release:
+    uses: pixelitemedia/workflows/.github/workflows/wp-org-release.yml@v1
+    with:
+      slug: 'custom-slug'              # defaults to repo name
+      assets-dir: 'wp-org-assets'      # defaults to .wordpress-org
+      build-dir: './build'             # path of built plugin if not repo root
+    secrets:
+      SVN_USERNAME: ${{ secrets.WP_ORG_USERNAME }}
+      SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
+```
 
 ## Versioning
 
