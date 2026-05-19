@@ -67,6 +67,17 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
+          SIZE=$(wc -c < ~/.ssh/id_deploy)
+          LINES=$(wc -l < ~/.ssh/id_deploy)
+          echo "Key file: $SIZE bytes, $LINES lines"
+          if [ "$SIZE" -lt 100 ]; then
+            echo "::error::DEPLOY_KEY secret is empty or too short ($SIZE bytes). Did you run gh secret set with the right key file?"
+            exit 1
+          fi
+          if ! grep -q 'BEGIN OPENSSH PRIVATE KEY' ~/.ssh/id_deploy; then
+            echo "::error::DEPLOY_KEY does not look like an OpenSSH private key (missing BEGIN header)"
+            exit 1
+          fi
           ssh-keyscan -T 10 -H "${{ steps.cfg.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null
           echo "::group::Deploy key fingerprint"
           ssh-keygen -lf ~/.ssh/id_deploy
