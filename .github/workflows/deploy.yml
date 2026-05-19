@@ -60,10 +60,12 @@ jobs:
           echo "Deploying as slug: $SLUG"
 
       - name: Setup SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -T 10 -H "${{ steps.cfg.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null
           echo "::group::Deploy key fingerprint"
