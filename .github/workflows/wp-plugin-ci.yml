@@ -129,7 +129,7 @@ jobs:
             REAL_ERRORS=$((ERRORS - WARNINGS))
             FIXABLE=0
             if [ -s ./phpcs-summary.txt ]; then
-              FIXABLE=$(grep -oE 'PHPCBF CAN FIX [0-9]+' ./phpcs-summary.txt 2>/dev/null | grep -oE '[0-9]+' | head -1)
+              FIXABLE=$(grep -oE 'CAN FIX (THE )?[0-9]+' ./phpcs-summary.txt 2>/dev/null | grep -oE '[0-9]+' | tail -1)
               FIXABLE=${FIXABLE:-0}
             fi
             PCT_FIXABLE=0
@@ -163,12 +163,14 @@ jobs:
             echo "_All findings are informational and do not gate merges. Download the \`phpcs-checkstyle\` artifact for the full report._"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload PHPCS report as artifact
+      - name: Upload PHPCS reports as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phpcs-checkstyle
-          path: ./phpcs-checkstyle.xml
+          name: phpcs-reports
+          path: |
+            ./phpcs-checkstyle.xml
+            ./phpcs-summary.txt
           if-no-files-found: ignore
 
   php-compatibility:
