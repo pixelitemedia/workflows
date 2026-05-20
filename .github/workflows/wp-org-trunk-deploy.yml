@@ -1,0 +1,149 @@
+name: WP.org Dev Trunk Deploy
+
+# Pushes the caller's checkout to wp.org SVN /trunk/ ONLY.
+# Does NOT create a /tags/ entry. Does NOT touch readme.txt's Stable tag.
+# Stable-channel users continue to receive the last released version;
+# Development Version users (on the plugin's /advanced/ page) pick up
+# this build.
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: 'wp.org plugin slug. Defaults to the GitHub repo name.'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      SVN_USERNAME:
+        description: 'wp.org SVN username'
+        required: true
+      SVN_PASSWORD:
+        description: 'wp.org SVN password'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  trunk:
+    name: Deploy /trunk/ (dev version)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Subversion + rsync
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends subversion rsync
+
+      - name: Deploy to wp.org /trunk/
+        id: deploy
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          INPUT_SLUG: ${{ inputs.slug }}
+        run: |
+          set -euo pipefail
+
+          # Resolve slug — caller-provided or repo name
+          SLUG="${INPUT_SLUG:-${GITHUB_REPOSITORY##*/}}"
+          SVN_URL="https://plugins.svn.wordpress.org/$SLUG"
+
+          # Strip 'd' prefix from tag if present (e.g. d7.3.0 -> 7.3.0)
+          GIT_REF="${GITHUB_REF#refs/tags/}"
+          DEV_VERSION="${GIT_REF#d}"
+
+          echo "Slug:        $SLUG"
+          echo "Tag:         $GIT_REF"
+          echo "Dev version: $DEV_VERSION"
+          echo "SVN URL:     $SVN_URL"
+
+          # Sparse SVN checkout of trunk only (saves time vs. checking out all tags)
+          mkdir -p "$RUNNER_TEMP/svn-co"
+          cd "$RUNNER_TEMP/svn-co"
+          svn co --depth=immediates "$SVN_URL" . \
+            --username "$SVN_USERNAME" --password "$SVN_PASSWORD" \
+            --non-interactive --no-auth-cache --quiet
+          svn up --set-depth=infinity trunk --quiet
+
+          # Build rsync exclusion list — prefer .distignore, else built-in defaults
+          # (matches the 10up/action-wordpress-plugin-deploy convention)
+          EXCLUDES=()
+          if [ -f "$GITHUB_WORKSPACE/.distignore" ]; then
+            echo "Using .distignore for exclusions"
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              [[ "$line" =~ ^# ]] && continue
+              EXCLUDES+=("--exclude=${line#/}")
+            done < "$GITHUB_WORKSPACE/.distignore"
+          else
+            echo "No .distignore — using built-in defaults"
+            EXCLUDES+=(
+              --exclude=.git
+              --exclude=.github
+              --exclude=node_modules
+              --exclude=.gitignore
+              --exclude=.gitattributes
+              --exclude=.distignore
+              --exclude=.wordpress-org
+            )
+          fi
+
+          echo "Rsyncing GITHUB_WORKSPACE → trunk/ ..."
+          rsync -a --delete "${EXCLUDES[@]}" \
+            "$GITHUB_WORKSPACE/" "$RUNNER_TEMP/svn-co/trunk/"
+
+          # SVN bookkeeping: stage adds + removes
+          cd "$RUNNER_TEMP/svn-co"
+          # Remove missing files
+          svn status trunk | awk '/^!/ {print $2}' \
+            | xargs -r -d'\n' svn rm --quiet || true
+          # Add new files
+          svn add trunk --force --quiet --auto-props || true
+
+          # Commit if there's actually anything to commit
+          if [ -n "$(svn status trunk)" ]; then
+            COMMIT_MSG="Dev trunk deploy ($GIT_REF) from $(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)"
+            echo "Committing: $COMMIT_MSG"
+            svn ci -m "$COMMIT_MSG" \
+              --username "$SVN_USERNAME" --password "$SVN_PASSWORD" \
+              --non-interactive --no-auth-cache
+            echo "deployed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes between this build and current wp.org /trunk/ — nothing to commit."
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "dev_version=$DEV_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        if: always()
+        run: |
+          SLUG="${{ steps.deploy.outputs.slug }}"
+          DEPLOYED="${{ steps.deploy.outputs.deployed }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          {
+            echo "## wp.org dev trunk deploy"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Slug | \`$SLUG\` |"
+            echo "| Git tag | \`$TAG\` |"
+            echo "| Dev version | \`${{ steps.deploy.outputs.dev_version }}\` |"
+            echo "| Status | ${{ job.status }} |"
+            echo "| Committed | ${DEPLOYED:-n/a} |"
+            echo ""
+            if [ "${{ job.status }}" = "success" ] && [ "$DEPLOYED" = "true" ]; then
+              echo "Pushed to wp.org **/trunk/** at [plugins.svn.wordpress.org/$SLUG/trunk/](https://plugins.svn.wordpress.org/$SLUG/trunk/)."
+              echo ""
+              echo "- **Stable channel users** continue to receive the version pointed to by \`readme.txt\`'s \`Stable tag:\` header — unaffected."
+              echo "- **Development Version users** at [wordpress.org/plugins/$SLUG/advanced/](https://wordpress.org/plugins/$SLUG/advanced/) pick up this build."
+              echo ""
+              echo "To promote to a stable release later: bump \`readme.txt\` Stable tag, push a \`vX.Y.Z\` git tag — the standard release workflow takes over."
+            elif [ "$DEPLOYED" = "false" ]; then
+              echo "No changes detected against current /trunk/ — nothing committed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

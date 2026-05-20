@@ -10,7 +10,8 @@ to maintain, ~20 plugins inherit it.
 |---|---|---|
 | `wp-plugin-ci.yml` | push, PR | Syntax + sniffs + composer validity, informational only |
 | `deploy.yml` | caller-controlled | rsync plugin to a known target server (sandbox, trywpem) |
-| `wp-org-release.yml` | tag push (caller-controlled) | Deploy a free plugin to wordpress.org SVN |
+| `wp-org-release.yml` | `v*` tag push | Stable wordpress.org release — pushes to both /trunk/ and /tags/X.Y.Z/, validates Stable tag |
+| `wp-org-trunk-deploy.yml` | `d*` tag push | Dev wordpress.org release — pushes /trunk/ only, no /tags/, no Stable tag check |
 
 ### `wp-plugin-ci.yml` — Standard WordPress plugin CI
 
@@ -195,6 +196,60 @@ jobs:
       SVN_USERNAME: ${{ secrets.WP_ORG_USER }}
       SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
 ```
+
+### `wp-org-trunk-deploy.yml` — Dev version to wp.org /trunk/
+
+For mid-release fixes and dev builds. Pushes to `/trunk/` only — does not
+create a `/tags/X.Y.Z/` entry, does not require or check the `Stable tag:`
+header in `readme.txt`.
+
+Stable-channel users continue to receive whatever version is in
+`readme.txt`'s `Stable tag:`. Anyone who opts in to the Development
+Version (on the plugin's wp.org `/advanced/` page) picks up trunk pushes.
+
+#### Use it
+
+Add `.github/workflows/wp-org-dev-release.yml` to a free plugin:
+
+```yaml
+name: Push dev version to wp.org trunk
+
+on:
+  push:
+    tags:
+      - 'd*'
+
+jobs:
+  trunk:
+    uses: pixelitemedia/workflows/.github/workflows/wp-org-trunk-deploy.yml@v1
+    secrets:
+      SVN_USERNAME: ${{ secrets.WP_ORG_USER }}
+      SVN_PASSWORD: ${{ secrets.WP_ORG_PASSWORD }}
+```
+
+#### Tag convention
+
+| Git tag | Triggers | wp.org SVN |
+|---|---|---|
+| `v7.2.3.1` | `wp-org-release.yml` | /trunk/ + /tags/7.2.3.1/, Stable tag bumped to 7.2.3.1 |
+| `d7.2.3.1-fix1` | `wp-org-trunk-deploy.yml` | /trunk/ only, Stable tag untouched |
+
+The `d` prefix is stripped from the tag name for display in the deploy
+summary. The actual tag name in git history is preserved as the audit
+record of every dev push.
+
+#### Required secrets
+
+Same as `wp-org-release.yml` — `WP_ORG_USER` and `WP_ORG_PASSWORD` as
+repository secrets.
+
+#### What gets shipped
+
+Same exclusions as 10up's deploy action: prefers `.distignore` if present,
+falls back to default exclusions (`.git`, `.github`, `node_modules`,
+`.wordpress-org`, etc.). Unlike `wp-org-release.yml`, this workflow does
+**not** touch `/assets/` — wp.org-page assets are managed only via stable
+releases.
 
 ## Versioning
 
