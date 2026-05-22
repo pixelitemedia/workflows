@@ -4,11 +4,27 @@ on:
   workflow_call:
     inputs:
       target:
-        description: 'Server target identifier: sandbox | trywpem'
+        description: 'Server target identifier: sandbox | trywpem | custom (then provide host/user)'
         required: true
         type: string
       plugin-slug:
         description: 'Plugin folder name on the server (defaults to repo name)'
+        type: string
+        default: ''
+      ref:
+        description: 'Branch / tag / SHA to deploy (defaults to triggering ref)'
+        type: string
+        default: ''
+      host:
+        description: 'Override host (only honoured when target == custom)'
+        type: string
+        default: ''
+      ssh-user:
+        description: 'Override SSH user (only honoured when target == custom)'
+        type: string
+        default: ''
+      label:
+        description: 'Display label for the target (only honoured when target == custom)'
         type: string
         default: ''
       rsync-extra-excludes:
@@ -30,6 +46,10 @@ jobs:
     steps:
       - name: Resolve target config
         id: cfg
+        env:
+          OVERRIDE_HOST: ${{ inputs.host }}
+          OVERRIDE_USER: ${{ inputs.ssh-user }}
+          OVERRIDE_LABEL: ${{ inputs.label }}
         run: |
           case "${{ inputs.target }}" in
             sandbox)
@@ -42,14 +62,39 @@ jobs:
               echo "user=trywpemc"           >> "$GITHUB_OUTPUT"
               echo "label=trywpem.com"       >> "$GITHUB_OUTPUT"
               ;;
+            custom)
+              if [ -z "$OVERRIDE_HOST" ] || [ -z "$OVERRIDE_USER" ]; then
+                echo "::error::target=custom requires host + ssh-user inputs."
+                exit 1
+              fi
+              echo "host=$OVERRIDE_HOST"                       >> "$GITHUB_OUTPUT"
+              echo "user=$OVERRIDE_USER"                       >> "$GITHUB_OUTPUT"
+              echo "label=${OVERRIDE_LABEL:-$OVERRIDE_HOST}"   >> "$GITHUB_OUTPUT"
+              ;;
             *)
-              echo "::error::Unknown deploy target '${{ inputs.target }}'. Valid: sandbox, trywpem."
+              echo "::error::Unknown deploy target '${{ inputs.target }}'. Valid: sandbox, trywpem, custom."
               exit 1
               ;;
           esac
 
-      - name: Checkout plugin
+      - name: Resolve ref to check out
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          DEFAULT_REF: ${{ github.ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            echo "value=$INPUT_REF" >> "$GITHUB_OUTPUT"
+            echo "Using explicit ref: $INPUT_REF"
+          else
+            echo "value=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
+            echo "Using triggering ref: $DEFAULT_REF"
+          fi
+
+      - name: Checkout plugin (${{ steps.ref.outputs.value }})
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.value }}
 
       - name: Resolve plugin slug
         id: slug
@@ -58,6 +103,20 @@ jobs:
           [ -z "$SLUG" ] && SLUG="${{ github.event.repository.name }}"
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
           echo "Deploying as slug: $SLUG"
+
+      - name: Capture deployed commit SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          SHORT=$(git rev-parse --short HEAD)
+          MSG=$(git log -1 --pretty=format:'%s' | tr -d '`' | head -c 200)
+          AUTHOR=$(git log -1 --pretty=format:'%an')
+          DATE=$(git log -1 --pretty=format:'%cI')
+          echo "sha=$SHA"          >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT"      >> "$GITHUB_OUTPUT"
+          echo "message=$MSG"      >> "$GITHUB_OUTPUT"
+          echo "author=$AUTHOR"    >> "$GITHUB_OUTPUT"
+          echo "date=$DATE"        >> "$GITHUB_OUTPUT"
 
       - name: Setup SSH key
         env:
@@ -141,6 +200,9 @@ jobs:
             echo "| Host | \`${{ steps.cfg.outputs.host }}\` |"
             echo "| User | \`${{ steps.cfg.outputs.user }}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
-            echo "| Ref | \`${{ github.ref_name }}\` (${GITHUB_SHA:0:7}) |"
+            echo "| Ref | \`${{ steps.ref.outputs.value }}\` |"
+            echo "| Commit | \`${{ steps.sha.outputs.short }}\` — ${{ steps.sha.outputs.message }} |"
+            echo "| Author | ${{ steps.sha.outputs.author }} |"
+            echo "| Committed | ${{ steps.sha.outputs.date }} |"
             echo "| Outcome | \`${{ steps.deploy.outcome }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
