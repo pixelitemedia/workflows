@@ -1,0 +1,217 @@
+name: WP.org Bump "Tested up to"
+
+# Bumps the "Tested up to:" header in readme.txt without bumping the plugin
+# version. Updates up to three places:
+#   1. The repo's readme.txt on the default branch (commit + push, with [skip ci])
+#   2. The wp.org SVN /trunk/readme.txt
+#   3. The wp.org SVN /tags/<latest>/readme.txt — so the version current installs
+#      see in their dashboard updates immediately, not at the next release.
+#
+# Each step is individually toggleable. No-op if nothing actually changes.
+
+on:
+  workflow_call:
+    inputs:
+      tested_up_to:
+        description: 'New "Tested up to:" value, e.g. 6.7'
+        type: string
+        required: true
+      wp_org_slug:
+        description: 'wp.org plugin slug. Defaults to repo name.'
+        type: string
+        default: ''
+      bump_repo:
+        description: 'Commit the bump to the repo default branch'
+        type: boolean
+        default: true
+      bump_trunk:
+        description: 'Bump wp.org /trunk/readme.txt'
+        type: boolean
+        default: true
+      bump_latest_tag:
+        description: 'Also bump the readme.txt of the latest /tags/X.Y.Z/'
+        type: boolean
+        default: true
+      commit_message:
+        description: 'Commit message for repo + SVN (auto if blank)'
+        type: string
+        default: ''
+    secrets:
+      SVN_USERNAME:
+        required: true
+      SVN_PASSWORD:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Bump tested-up-to to ${{ inputs.tested_up_to }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install SVN + tooling
+        run: sudo apt-get install -y --no-install-recommends subversion
+
+      - name: Resolve config
+        id: cfg
+        env:
+          INPUT_SLUG: ${{ inputs.wp_org_slug }}
+          INPUT_VALUE: ${{ inputs.tested_up_to }}
+          INPUT_MSG: ${{ inputs.commit_message }}
+        run: |
+          SLUG="${INPUT_SLUG:-${GITHUB_REPOSITORY##*/}}"
+          VALUE="$INPUT_VALUE"
+          # Sanity: must look like a WP version (digits + dots)
+          if ! [[ "$VALUE" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::tested_up_to '$VALUE' doesn't look like a WP version (e.g. 6.7 or 6.7.1)"
+            exit 1
+          fi
+          MSG="$INPUT_MSG"
+          if [ -z "$MSG" ]; then
+            MSG="Bump Tested up to: $VALUE"
+          fi
+          echo "slug=$SLUG"   >> "$GITHUB_OUTPUT"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "msg=$MSG"     >> "$GITHUB_OUTPUT"
+
+      # --- Step A: bump the repo's readme.txt (commit + push) -----------------
+      - name: Bump readme.txt in repo
+        if: inputs.bump_repo
+        id: repo
+        run: |
+          if [ ! -f readme.txt ]; then
+            echo "::warning::No readme.txt at repo root — skipping repo bump"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BEFORE=$(grep -E '^[Tt]ested up to:' readme.txt | head -1 || echo "")
+          sed -i.bak -E "s/^([Tt]ested up to:[[:space:]]*).*/\1${{ steps.cfg.outputs.value }}/" readme.txt
+          rm -f readme.txt.bak
+          AFTER=$(grep -E '^[Tt]ested up to:' readme.txt | head -1 || echo "")
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "No change to repo readme.txt ($AFTER)"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add readme.txt
+            git commit -m "${{ steps.cfg.outputs.msg }} [skip ci]"
+            git push
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "before=$BEFORE" >> "$GITHUB_OUTPUT"
+            echo "after=$AFTER"   >> "$GITHUB_OUTPUT"
+          fi
+
+      # --- Step B: bump wp.org /trunk/ AND latest /tags/X.Y.Z/ ----------------
+      - name: Bump wp.org SVN
+        if: inputs.bump_trunk || inputs.bump_latest_tag
+        id: svn
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+        run: |
+          set -e
+          SLUG="${{ steps.cfg.outputs.slug }}"
+          VALUE="${{ steps.cfg.outputs.value }}"
+          SVN_URL="https://plugins.svn.wordpress.org/$SLUG"
+          SVN_DIR="$RUNNER_TEMP/svn"
+          mkdir -p "$SVN_DIR"
+
+          # Resolve latest tag (lexical-numeric sort).
+          echo "Listing /tags/ on $SVN_URL …"
+          TAGS=$(svn ls "$SVN_URL/tags/" \
+            --username "$SVN_USERNAME" --password "$SVN_PASSWORD" \
+            --non-interactive --no-auth-cache 2>/dev/null | tr -d / || true)
+          LATEST_TAG=$(echo "$TAGS" | sort -V | tail -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::warning::No /tags/ found on wp.org — only /trunk/ will be touched"
+            LATEST_TAG=""
+          else
+            echo "Latest tag on wp.org: $LATEST_TAG"
+          fi
+
+          # Sparse checkout of trunk + the latest tag only.
+          cd "$SVN_DIR"
+          svn co --depth=empty "$SVN_URL" . \
+            --username "$SVN_USERNAME" --password "$SVN_PASSWORD" \
+            --non-interactive --no-auth-cache --quiet
+
+          BUMPS=()
+
+          if ${{ inputs.bump_trunk }}; then
+            svn up --depth=files trunk --quiet \
+              --username "$SVN_USERNAME" --password "$SVN_PASSWORD" --non-interactive --no-auth-cache
+            if [ -f trunk/readme.txt ]; then
+              BEFORE=$(grep -E '^[Tt]ested up to:' trunk/readme.txt | head -1 || echo "")
+              sed -i.bak -E "s/^([Tt]ested up to:[[:space:]]*).*/\1$VALUE/" trunk/readme.txt
+              rm -f trunk/readme.txt.bak
+              AFTER=$(grep -E '^[Tt]ested up to:' trunk/readme.txt | head -1 || echo "")
+              if [ "$BEFORE" = "$AFTER" ]; then
+                echo "trunk/readme.txt already at $VALUE — no change"
+              else
+                BUMPS+=("trunk")
+                echo "trunk: $BEFORE → $AFTER"
+              fi
+            else
+              echo "::warning::trunk/readme.txt missing on wp.org"
+            fi
+          fi
+
+          if ${{ inputs.bump_latest_tag }} && [ -n "$LATEST_TAG" ]; then
+            svn up --depth=empty "tags" --quiet \
+              --username "$SVN_USERNAME" --password "$SVN_PASSWORD" --non-interactive --no-auth-cache
+            svn up --depth=files "tags/$LATEST_TAG" --quiet \
+              --username "$SVN_USERNAME" --password "$SVN_PASSWORD" --non-interactive --no-auth-cache
+            if [ -f "tags/$LATEST_TAG/readme.txt" ]; then
+              BEFORE=$(grep -E '^[Tt]ested up to:' "tags/$LATEST_TAG/readme.txt" | head -1 || echo "")
+              sed -i.bak -E "s/^([Tt]ested up to:[[:space:]]*).*/\1$VALUE/" "tags/$LATEST_TAG/readme.txt"
+              rm -f "tags/$LATEST_TAG/readme.txt.bak"
+              AFTER=$(grep -E '^[Tt]ested up to:' "tags/$LATEST_TAG/readme.txt" | head -1 || echo "")
+              if [ "$BEFORE" = "$AFTER" ]; then
+                echo "tags/$LATEST_TAG/readme.txt already at $VALUE — no change"
+              else
+                BUMPS+=("tags/$LATEST_TAG")
+                echo "tags/$LATEST_TAG: $BEFORE → $AFTER"
+              fi
+            else
+              echo "::warning::tags/$LATEST_TAG/readme.txt missing on wp.org"
+            fi
+          fi
+
+          if [ "${#BUMPS[@]}" -eq 0 ]; then
+            echo "No SVN changes to commit."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Committing: ${BUMPS[*]}"
+            svn ci -m "${{ steps.cfg.outputs.msg }}" \
+              --username "$SVN_USERNAME" --password "$SVN_PASSWORD" \
+              --non-interactive --no-auth-cache
+            echo "committed=true"     >> "$GITHUB_OUTPUT"
+            echo "paths=${BUMPS[*]}"  >> "$GITHUB_OUTPUT"
+            echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            ICON="✅"
+            [ "${{ job.status }}" = "failure" ] && ICON="❌"
+            echo "## $ICON Bump Tested up to: \`${{ steps.cfg.outputs.value }}\`"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Plugin slug | \`${{ steps.cfg.outputs.slug }}\` |"
+            echo "| Repo bumped | \`${{ steps.repo.outputs.changed }}\` |"
+            echo "| SVN committed | \`${{ steps.svn.outputs.committed }}\` |"
+            echo "| SVN paths | \`${{ steps.svn.outputs.paths }}\` |"
+            echo "| SVN latest tag | \`${{ steps.svn.outputs.latest_tag }}\` |"
+            echo "| Status | \`${{ job.status }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
