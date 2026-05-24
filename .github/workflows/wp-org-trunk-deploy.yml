@@ -94,6 +94,17 @@ jobs:
             --non-interactive --no-auth-cache --quiet
           svn up --set-depth=infinity trunk --quiet
 
+          # Capture the existing /trunk/readme.txt's Stable tag BEFORE rsync.
+          # A dev push should NOT change which /tags/X.Y.Z/ stable users get —
+          # that's the Tag release workflow's job. If we let the repo's
+          # Stable tag overwrite this, users could land on a tag that
+          # doesn't exist yet and break.
+          PRESERVED_STABLE_TAG=""
+          if [ -f trunk/readme.txt ]; then
+            PRESERVED_STABLE_TAG=$(grep -E '^[Ss]table tag:' trunk/readme.txt | head -1 | sed -E 's/^[Ss]table tag:[[:space:]]*//;s/[[:space:]]*$//')
+            echo "Will preserve /trunk/readme.txt Stable tag: $PRESERVED_STABLE_TAG"
+          fi
+
           # Build rsync exclusion list — prefer .distignore, else built-in defaults
           # (matches the 10up/action-wordpress-plugin-deploy convention)
           EXCLUDES=()
@@ -120,6 +131,17 @@ jobs:
           echo "Rsyncing GITHUB_WORKSPACE → trunk/ ..."
           rsync -a --delete "${EXCLUDES[@]}" \
             "$GITHUB_WORKSPACE/" "$RUNNER_TEMP/svn-co/trunk/"
+
+          # Restore the original Stable tag now that rsync has overwritten
+          # /trunk/readme.txt. Idempotent — no-op if values already match.
+          if [ -n "$PRESERVED_STABLE_TAG" ] && [ -f trunk/readme.txt ]; then
+            CURRENT_AFTER_RSYNC=$(grep -E '^[Ss]table tag:' trunk/readme.txt | head -1 | sed -E 's/^[Ss]table tag:[[:space:]]*//;s/[[:space:]]*$//')
+            if [ "$CURRENT_AFTER_RSYNC" != "$PRESERVED_STABLE_TAG" ]; then
+              echo "Restoring Stable tag: $CURRENT_AFTER_RSYNC → $PRESERVED_STABLE_TAG"
+              sed -i.bak -E "s/^([Ss]table tag:[[:space:]]*).*/\1$PRESERVED_STABLE_TAG/" trunk/readme.txt
+              rm -f trunk/readme.txt.bak
+            fi
+          fi
 
           # SVN bookkeeping: stage adds + removes
           cd "$RUNNER_TEMP/svn-co"
