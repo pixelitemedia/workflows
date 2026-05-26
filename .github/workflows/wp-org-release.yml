@@ -8,6 +8,16 @@ on:
         type: string
         required: false
         default: ''
+      ref:
+        description: 'Branch / tag / SHA to deploy. Defaults to the triggering ref.'
+        type: string
+        required: false
+        default: ''
+      version:
+        description: 'wp.org version (e.g. 7.3). When set, the 10up action uses this for /tags/<version>/ regardless of the triggering ref. Required when dispatched from a non-tag ref. Should match readme.txt Stable tag.'
+        type: string
+        required: false
+        default: ''
       assets-dir:
         description: 'Path to wp.org assets folder (banners, screenshots, icon).'
         type: string
@@ -32,8 +42,63 @@ jobs:
     name: Deploy to WordPress.org
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Resolve ref to check out
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          DEFAULT_REF: ${{ github.ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            echo "value=$INPUT_REF" >> "$GITHUB_OUTPUT"
+            echo "Using explicit ref: $INPUT_REF"
+          else
+            echo "value=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
+            echo "Using triggering ref: $DEFAULT_REF"
+          fi
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF: ${{ steps.ref.outputs.value }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VER="${INPUT_VERSION#v}"
+            echo "value=$VER" >> "$GITHUB_OUTPUT"
+            echo "Using explicit version: $VER"
+          elif [[ "$REF" == refs/tags/v* ]]; then
+            VER="${REF#refs/tags/v}"
+            echo "value=$VER" >> "$GITHUB_OUTPUT"
+            echo "Derived version from tag: $VER"
+          elif [[ "$REF" == refs/tags/* ]]; then
+            VER="${REF#refs/tags/}"
+            echo "value=$VER" >> "$GITHUB_OUTPUT"
+            echo "Derived version from tag: $VER"
+          else
+            echo "::error::Could not determine wp.org version. The trigger ref ($REF) is not a tag, and no 'version' input was provided. Either push a tag like v7.3 or pass the version input when dispatching manually."
+            exit 1
+          fi
+
+      - name: Checkout (${{ steps.ref.outputs.value }})
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.value }}
+
+      - name: Verify readme.txt Stable tag matches version
+        id: readme-check
+        run: |
+          STABLE=$(grep -iE "^[[:space:]]*Stable tag:[[:space:]]*" readme.txt | head -1 | sed -E 's/^[[:space:]]*Stable tag:[[:space:]]*([^[:space:]]+).*$/\1/' || echo "")
+          VER="${{ steps.version.outputs.value }}"
+          echo "readme.txt Stable tag: '$STABLE'"
+          echo "deploying as version:  '$VER'"
+          if [ -z "$STABLE" ]; then
+            echo "::warning::Could not find 'Stable tag:' line in readme.txt — the 10up action will likely fail."
+          elif [ "$STABLE" != "$VER" ]; then
+            echo "::error::readme.txt Stable tag ('$STABLE') does not match the version being deployed ('$VER'). The 10up action will reject the deploy. Update Stable tag in readme.txt or pass a matching version input."
+            exit 1
+          else
+            echo "::notice::Stable tag matches deploy version — proceeding."
+          fi
 
       - name: Deploy via 10up action
         id: deploy
@@ -44,6 +109,7 @@ jobs:
           SLUG: ${{ inputs.slug }}
           ASSETS_DIR: ${{ inputs.assets-dir }}
           BUILD_DIR: ${{ inputs.build-dir }}
+          VERSION: ${{ steps.version.outputs.value }}
 
       - name: Summarize deploy
         if: always()
@@ -52,19 +118,23 @@ jobs:
           if [ -z "$SLUG_USED" ]; then
             SLUG_USED="${GITHUB_REPOSITORY##*/}"
           fi
-          TAG="${GITHUB_REF##refs/tags/}"
           {
             echo "## wp.org deploy"
             echo ""
             echo "| | |"
             echo "| --- | --- |"
             echo "| Slug | \`$SLUG_USED\` |"
-            echo "| Git tag | \`$TAG\` |"
+            echo "| Ref | \`${{ steps.ref.outputs.value }}\` |"
+            echo "| Version | \`${{ steps.version.outputs.value }}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Deploy status | ${{ job.status }} |"
             echo ""
             if [ "${{ job.status }}" = "success" ]; then
-              echo "Plugin pushed to [wordpress.org/plugins/$SLUG_USED](https://wordpress.org/plugins/$SLUG_USED/)"
+              echo "Plugin pushed to [wordpress.org/plugins/$SLUG_USED](https://wordpress.org/plugins/$SLUG_USED/) as version \`${{ steps.version.outputs.value }}\`."
             else
-              echo "Deploy did not complete. Check the deploy step output for the cause — most often: missing/mismatched 'Stable tag' in readme.txt, or a Subversion auth error."
+              echo "Deploy did not complete. Common causes:"
+              echo "- \`readme.txt\` \`Stable tag:\` doesn't match the version (see the 'Verify readme.txt' step above)"
+              echo "- Subversion auth error (check \`WP_ORG_USER\` / \`WP_ORG_PASSWORD\` secrets)"
+              echo "- Plugin not yet approved on wp.org (first deploy requires approved listing)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
