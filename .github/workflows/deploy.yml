@@ -31,6 +31,10 @@ on:
         description: 'SSH port (only honoured when target == custom; defaults to 22)'
         type: string
         default: ''
+      remote-base-path:
+        description: 'Optional path prefix on the remote (relative to SSH home, no trailing slash). Empty = deploy straight to home dir. Only honoured when target == custom; sandbox/trywpem rely on rrsync server-side wrapping.'
+        type: string
+        default: ''
       rsync-extra-excludes:
         description: 'Newline-separated extra rsync --exclude patterns'
         type: string
@@ -55,19 +59,26 @@ jobs:
           OVERRIDE_USER: ${{ inputs.ssh-user }}
           OVERRIDE_LABEL: ${{ inputs.label }}
           OVERRIDE_PORT: ${{ inputs.ssh-port }}
+          OVERRIDE_BASE: ${{ inputs.remote-base-path }}
         run: |
+          # Strip leading/trailing slashes from remote-base-path so we can safely interpolate
+          OVERRIDE_BASE="${OVERRIDE_BASE#/}"
+          OVERRIDE_BASE="${OVERRIDE_BASE%/}"
+
           case "${{ inputs.target }}" in
             sandbox)
               echo "host=192.254.232.182"     >> "$GITHUB_OUTPUT"
               echo "user=msykes"              >> "$GITHUB_OUTPUT"
               echo "label=sandbox.em.cm"      >> "$GITHUB_OUTPUT"
               echo "port=22"                  >> "$GITHUB_OUTPUT"
+              echo "remote_base="             >> "$GITHUB_OUTPUT"
               ;;
             trywpem)
               echo "host=162.241.217.222"    >> "$GITHUB_OUTPUT"
               echo "user=trywpemc"           >> "$GITHUB_OUTPUT"
               echo "label=trywpem.com"       >> "$GITHUB_OUTPUT"
               echo "port=22"                 >> "$GITHUB_OUTPUT"
+              echo "remote_base="            >> "$GITHUB_OUTPUT"
               ;;
             custom)
               if [ -z "$OVERRIDE_HOST" ] || [ -z "$OVERRIDE_USER" ]; then
@@ -78,6 +89,7 @@ jobs:
               echo "user=$OVERRIDE_USER"                       >> "$GITHUB_OUTPUT"
               echo "label=${OVERRIDE_LABEL:-$OVERRIDE_HOST}"   >> "$GITHUB_OUTPUT"
               echo "port=${OVERRIDE_PORT:-22}"                 >> "$GITHUB_OUTPUT"
+              echo "remote_base=$OVERRIDE_BASE"                >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "::error::Unknown deploy target '${{ inputs.target }}'. Valid: sandbox, trywpem, custom."
@@ -182,12 +194,21 @@ jobs:
         id: deploy
         run: |
           set -o pipefail
+          BASE="${{ steps.cfg.outputs.remote_base }}"
+          SLUG="${{ steps.slug.outputs.slug }}"
+          if [ -n "$BASE" ]; then
+            REMOTE_PATH="${BASE}/${SLUG}"
+          else
+            REMOTE_PATH="${SLUG}"
+          fi
+          echo "Remote target: ${{ steps.cfg.outputs.user }}@${{ steps.cfg.outputs.host }}:${REMOTE_PATH}/"
           rsync -avz --delete \
             --exclude-from=/tmp/rsync-excludes \
             -e "ssh -p ${{ steps.cfg.outputs.port }} -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
             ./ \
-            "${{ steps.cfg.outputs.user }}@${{ steps.cfg.outputs.host }}:${{ steps.slug.outputs.slug }}/" \
+            "${{ steps.cfg.outputs.user }}@${{ steps.cfg.outputs.host }}:${REMOTE_PATH}/" \
             2>&1 | tee /tmp/rsync.log
+          echo "remote_path=$REMOTE_PATH" >> "$GITHUB_OUTPUT"
           {
             FILES=$(grep -cE '^[^ /]' /tmp/rsync.log 2>/dev/null || echo 0)
             echo "files=$FILES" >> "$GITHUB_OUTPUT"
@@ -208,6 +229,7 @@ jobs:
             echo "| Host | \`${{ steps.cfg.outputs.host }}\` |"
             echo "| Port | \`${{ steps.cfg.outputs.port }}\` |"
             echo "| User | \`${{ steps.cfg.outputs.user }}\` |"
+            echo "| Remote path | \`~/${{ steps.deploy.outputs.remote_path }}/\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Ref | \`${{ steps.ref.outputs.value }}\` |"
             echo "| Commit | \`${{ steps.sha.outputs.short }}\` — ${{ steps.sha.outputs.message }} |"
