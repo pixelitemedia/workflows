@@ -27,6 +27,10 @@ on:
         description: 'Display label for the target (only honoured when target == custom)'
         type: string
         default: ''
+      ssh-port:
+        description: 'SSH port (only honoured when target == custom; defaults to 22)'
+        type: string
+        default: ''
       rsync-extra-excludes:
         description: 'Newline-separated extra rsync --exclude patterns'
         type: string
@@ -50,17 +54,20 @@ jobs:
           OVERRIDE_HOST: ${{ inputs.host }}
           OVERRIDE_USER: ${{ inputs.ssh-user }}
           OVERRIDE_LABEL: ${{ inputs.label }}
+          OVERRIDE_PORT: ${{ inputs.ssh-port }}
         run: |
           case "${{ inputs.target }}" in
             sandbox)
               echo "host=192.254.232.182"     >> "$GITHUB_OUTPUT"
               echo "user=msykes"              >> "$GITHUB_OUTPUT"
               echo "label=sandbox.em.cm"      >> "$GITHUB_OUTPUT"
+              echo "port=22"                  >> "$GITHUB_OUTPUT"
               ;;
             trywpem)
               echo "host=162.241.217.222"    >> "$GITHUB_OUTPUT"
               echo "user=trywpemc"           >> "$GITHUB_OUTPUT"
               echo "label=trywpem.com"       >> "$GITHUB_OUTPUT"
+              echo "port=22"                 >> "$GITHUB_OUTPUT"
               ;;
             custom)
               if [ -z "$OVERRIDE_HOST" ] || [ -z "$OVERRIDE_USER" ]; then
@@ -70,6 +77,7 @@ jobs:
               echo "host=$OVERRIDE_HOST"                       >> "$GITHUB_OUTPUT"
               echo "user=$OVERRIDE_USER"                       >> "$GITHUB_OUTPUT"
               echo "label=${OVERRIDE_LABEL:-$OVERRIDE_HOST}"   >> "$GITHUB_OUTPUT"
+              echo "port=${OVERRIDE_PORT:-22}"                 >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "::error::Unknown deploy target '${{ inputs.target }}'. Valid: sandbox, trywpem, custom."
@@ -137,7 +145,7 @@ jobs:
             echo "::error::DEPLOY_KEY does not look like an OpenSSH private key (missing BEGIN header)"
             exit 1
           fi
-          ssh-keyscan -T 10 -H "${{ steps.cfg.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -T 10 -p "${{ steps.cfg.outputs.port }}" -H "${{ steps.cfg.outputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null
           echo "::group::Deploy key fingerprint"
           ssh-keygen -lf ~/.ssh/id_deploy
           echo "::endgroup::"
@@ -176,7 +184,7 @@ jobs:
           set -o pipefail
           rsync -avz --delete \
             --exclude-from=/tmp/rsync-excludes \
-            -e "ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
+            -e "ssh -p ${{ steps.cfg.outputs.port }} -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
             ./ \
             "${{ steps.cfg.outputs.user }}@${{ steps.cfg.outputs.host }}:${{ steps.slug.outputs.slug }}/" \
             2>&1 | tee /tmp/rsync.log
@@ -198,6 +206,7 @@ jobs:
             echo "| Plugin slug | \`${{ steps.slug.outputs.slug }}\` |"
             echo "| Target | \`${{ inputs.target }}\` (${{ steps.cfg.outputs.label }}) |"
             echo "| Host | \`${{ steps.cfg.outputs.host }}\` |"
+            echo "| Port | \`${{ steps.cfg.outputs.port }}\` |"
             echo "| User | \`${{ steps.cfg.outputs.user }}\` |"
             echo "| Trigger | \`${{ github.event_name }}\` |"
             echo "| Ref | \`${{ steps.ref.outputs.value }}\` |"
