@@ -6,7 +6,7 @@ on:
       php-versions:
         description: 'JSON array of PHP versions for syntax matrix'
         type: string
-        default: '["7.4", "8.0", "8.1", "8.2", "8.3"]'
+        default: '["8.0", "8.1", "8.2", "8.3", "8.4"]'
       phpcs-standard:
         description: 'PHPCS standard slug (WordPress-Core, WordPress, WordPress-Extra, etc.)'
         type: string
@@ -210,7 +210,7 @@ jobs:
           MIN_PHP=$(grep -rihE '^[[:space:]]*\*?[[:space:]]*Requires PHP:' --include='*.php' --include='readme.txt' . 2>/dev/null \
             | head -1 \
             | sed -E 's/.*Requires PHP:[[:space:]]*([0-9]+\.[0-9]+).*/\1/')
-          if [ -z "$MIN_PHP" ]; then MIN_PHP="7.4"; echo "No 'Requires PHP' header found; defaulting to 7.4"; fi
+          if [ -z "$MIN_PHP" ]; then MIN_PHP="8.0"; echo "No 'Requires PHP' header found; defaulting to 8.0"; fi
           echo "min_php=$MIN_PHP" >> "$GITHUB_OUTPUT"
           echo "Testing PHP compatibility from $MIN_PHP onward"
 
